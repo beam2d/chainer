@@ -1,12 +1,12 @@
-import numpy
+import math
 
 from chainer import cuda
-from chainer import function
+from chainer import function_node
 from chainer import utils
 from chainer.utils import type_check
 
 
-class Exp(function.Function):
+class Exp(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -16,26 +16,22 @@ class Exp(function.Function):
         type_check.expect(in_types.size() == 1)
         type_check.expect(in_types[0].dtype.kind == 'f')
 
-    def forward_cpu(self, x):
-        self.retain_inputs(())
+    def forward(self, x):
         self.retain_outputs((0,))
-        return utils.force_array(numpy.exp(x[0])),
+        xp = cuda.get_array_module(*x)
+        return utils.force_array(xp.exp(x[0])),
 
-    def forward_gpu(self, x):
-        self.retain_inputs(())
-        self.retain_outputs((0,))
-        return cuda.cupy.exp(x[0]),
-
-    def backward(self, x, gy):
-        return utils.force_array(self.output_data[0] * gy[0]),
+    def backward(self, indexes, gy):
+        y, = self.get_retained_outputs()
+        return y * gy[0],
 
 
 def exp(x):
     """Elementwise exponential function."""
-    return Exp()(x)
+    return Exp().apply((x,))[0]
 
 
-class Log(function.Function):
+class Log(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -45,22 +41,22 @@ class Log(function.Function):
         type_check.expect(in_types.size() == 1)
         type_check.expect(in_types[0].dtype.kind == 'f')
 
-    def forward_cpu(self, x):
-        return utils.force_array(numpy.log(x[0])),
+    def forward(self, x):
+        self.retain_inputs((0,))
+        xp = cuda.get_array_module(*x)
+        return utils.force_array(xp.log(x[0])),
 
-    def forward_gpu(self, x):
-        return cuda.cupy.log(x[0]),
-
-    def backward(self, x, gy):
-        return utils.force_array(gy[0] / x[0]),
+    def backward(self, indexes, gy):
+        x, = self.get_retained_inputs()
+        return gy[0] / x,
 
 
 def log(x):
     """Elementwise natural logarithm function."""
-    return Log()(x)
+    return Log().apply((x,))[0]
 
 
-class Log2(function.Function):
+class Log2(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -71,15 +67,13 @@ class Log2(function.Function):
         type_check.expect(in_types[0].dtype.kind == 'f')
 
     def forward(self, x):
+        self.retain_inputs((0,))
         xp = cuda.get_array_module(*x)
         return utils.force_array(xp.log2(x[0])),
 
-    def backward(self, x, gy):
-        xp = cuda.get_array_module(*x)
-        gx = utils.force_array(xp.reciprocal(x[0]))
-        gx /= xp.log(2)
-        gx *= gy[0]
-        return gx,
+    def backward(self, indexes, gy):
+        x, = self.get_retained_inputs()
+        return (1 / math.log(2)) / x * gy[0],
 
 
 def log2(x):
@@ -94,10 +88,10 @@ def log2(x):
     Returns:
         ~chainer.Variable: Output variable.
     """
-    return Log2()(x)
+    return Log2().apply((x,))[0]
 
 
-class Log10(function.Function):
+class Log10(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -108,15 +102,13 @@ class Log10(function.Function):
         type_check.expect(in_types[0].dtype.kind == 'f')
 
     def forward(self, x):
+        self.retain_inputs((0,))
         xp = cuda.get_array_module(*x)
         return utils.force_array(xp.log10(x[0])),
 
-    def backward(self, x, gy):
-        xp = cuda.get_array_module(*x)
-        gx = utils.force_array(xp.reciprocal(x[0]))
-        gx /= xp.log(10)
-        gx *= gy[0]
-        return gx,
+    def backward(self, indexes, gy):
+        x, = self.get_retained_inputs()
+        return (1 / math.log(10)) / x * gy[0],
 
 
 def log10(x):
@@ -131,4 +123,4 @@ def log10(x):
     Returns:
         ~chainer.Variable: Output variable.
     """
-    return Log10()(x)
+    return Log10().apply((x,))[0]

@@ -3,6 +3,7 @@ import numpy
 from chainer import cuda
 from chainer import function
 from chainer import function_node
+from chainer.functions.math import exponential
 from chainer.functions.math import matmul as _matmul
 from chainer import utils
 from chainer.utils import type_check
@@ -47,7 +48,7 @@ def _preprocess_const(x, value):
     return utils.force_type(x.dtype, value)
 
 
-class Neg(function.Function):
+class Neg(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -57,11 +58,10 @@ class Neg(function.Function):
         type_check.expect(in_types.size() == 1)
 
     def forward(self, x):
-        self.retain_inputs(())
         return utils.force_array(-x[0]),
 
-    def backward(self, x, gy):
-        return utils.force_array(-gy[0]),
+    def backward_accumulate(self, indexes, gy, gx):
+        return -gy[0] if gx[0] is None else gx[0] - gy[0],
 
 
 def neg(self):  # -x
@@ -70,10 +70,11 @@ def neg(self):  # -x
     Returns:
         ~chainer.Variable: Output variable.
     """
-    return Neg()(self)
+    ret, = Neg().apply((self,))
+    return ret
 
 
-class Absolute(function.Function):
+class Absolute(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -84,17 +85,13 @@ class Absolute(function.Function):
         type_check.expect(in_types[0].dtype.kind == 'f')
 
     def forward(self, x):
+        self.retain_inputs((0,))
         return utils.force_array(abs(x[0])),
 
-    def backward_cpu(self, x, gy):
-        return utils.force_array(numpy.sign(x[0]) * gy[0]),
-
-    def backward_gpu(self, x, gy):
-        gx0 = cuda.elementwise(
-            'T x0, T gy', 'T gx0',
-            'gx0 = ((x0 > 0) - (x0 < 0)) * gy',
-            'abs_bwd')(x[0], gy[0])
-        return gx0,
+    def backward(self, indexes, gy):
+        x, = self.get_retained_inputs()
+        xp = cuda.get_array_module(x)
+        return xp.sign(x.data) * gy[0],
 
 
 def absolute(self):
@@ -103,7 +100,7 @@ def absolute(self):
     Returns:
         ~chainer.Variable: Output variable.
     """
-    return Absolute()(self)
+    return Absolute().apply((self,))[0]
 
 
 class Add(function_node.FunctionNode):
@@ -123,8 +120,8 @@ class Add(function_node.FunctionNode):
         y = utils.force_array(x[0] + x[1])
         return y,
 
-    def backward(self, indexes, gy):
-        return gy[0], gy[0]
+    def backward(self, indexes, grad_outputs):
+        return grad_outputs * len(indexes)
 
 
 class AddConstant(function_node.FunctionNode):
@@ -144,7 +141,7 @@ class AddConstant(function_node.FunctionNode):
         return utils.force_array(x[0] + value),
 
     def backward(self, indexes, gy):
-        return gy[0],
+        return gy
 
 
 def add(self, rhs):  # lhs + rhs
@@ -159,7 +156,7 @@ def add(self, rhs):  # lhs + rhs
     return AddConstant(rhs).apply((self,))[0]
 
 
-class Sub(function.Function):
+class Sub(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -173,11 +170,15 @@ class Sub(function.Function):
         )
 
     def forward(self, x):
-        self.retain_inputs(())
         return utils.force_array(x[0] - x[1]),
 
-    def backward(self, x, gy):
-        return gy[0], utils.force_array(-gy[0])
+    def backward_accumulate(self, indexes, gy, gx):
+        if len(indexes) == 2:
+            return (gy[0] if gx[0] is None else gx[0] + gy[0],
+                    -gy[0] if gx[1] is None else gx[1] - gy[0])
+        elif indexes[0] == 0:
+            return gy[0] if gx[0] is None else gx[0] + gy[0],
+        return -gy[0] if gx[0] is None else gx[0] - gy[0],
 
 
 def sub(self, rhs):  # lhs - rhs
@@ -188,12 +189,12 @@ def sub(self, rhs):  # lhs - rhs
     """
 
     if isinstance(rhs, variable.Variable):
-        return Sub()(self, rhs)
+        return Sub().apply((self, rhs))[0]
     _check_constant_type(rhs)
     return AddConstant(-rhs).apply((self,))[0]
 
 
-class SubFromConstant(function.Function):
+class SubFromConstant(function_node.FunctionNode):
 
     def __init__(self, value):
         self.value = value
@@ -206,11 +207,10 @@ class SubFromConstant(function.Function):
         type_check.expect(in_types.size() == 1)
 
     def forward(self, x):
-        self.retain_inputs(())
         value = _preprocess_const(x[0], self.value)
         return utils.force_array(value - x[0]),
 
-    def backward(self, x, gy):
+    def backward(self, indexes, gy):
         return utils.force_array(-gy[0]),
 
 
@@ -221,9 +221,9 @@ def rsub(self, rhs):  # rhs - lhs
         ~chainer.Variable: Output variable.
     """
     if isinstance(rhs, variable.Variable):
-        return Sub()(rhs, self)
+        return Sub().apply((rhs, self))[0]
     _check_constant_type(rhs)
-    return SubFromConstant(rhs)(self)
+    return SubFromConstant(rhs).apply((self,))[0]
 
 
 class Mul(function_node.FunctionNode):
@@ -282,7 +282,7 @@ def mul(self, rhs):  # lhs * rhs
     return MulConstant(rhs).apply((self,))[0]
 
 
-class Div(function.Function):
+class Div(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -297,20 +297,19 @@ class Div(function.Function):
         )
 
     def forward(self, x):
+        self.retain_inputs((0, 1))
         return utils.force_array(x[0] / x[1]),
 
-    def backward_cpu(self, x, gy):
-        gx0 = utils.force_array(gy[0] / x[1])
-        return gx0, utils.force_array(-gx0 * x[0] / x[1])
-
-    def backward_gpu(self, x, gy):
-        return cuda.elementwise(
-            'T x0, T x1, T gy',
-            'T gx0, T gx1',
-            '''
-               gx0 = gy / x1;
-               gx1 = -gx0 * x0 / x1;
-            ''', 'div_bwd')(x[0], x[1], gy[0])
+    def backward(self, indexes, gy):
+        # TODO(beam2d): Fuse the kernels
+        x0, x1 = self.get_retained_inputs()
+        ret = []
+        gx0 = gy[0] / x1
+        if 0 in indexes:
+            ret.append(gx0)
+        if 1 in indexes:
+            ret.append(-gx0 * x0 / x1)
+        return ret
 
 
 def div(self, rhs):  # lhs / rhs
@@ -321,12 +320,12 @@ def div(self, rhs):  # lhs / rhs
     """
 
     if isinstance(rhs, variable.Variable):
-        return Div()(self, rhs)
+        return Div().apply((self, rhs))[0]
     _check_constant_type(rhs)
     return MulConstant(1. / rhs).apply((self,))[0]
 
 
-class DivFromConstant(function.Function):
+class DivFromConstant(function_node.FunctionNode):
 
     def __init__(self, value):
         self.value = value
@@ -340,20 +339,15 @@ class DivFromConstant(function.Function):
         type_check.expect(in_types[0].dtype.kind == 'f')
 
     def forward(self, x):
+        self.retain_inputs((0,))
         value = _preprocess_const(x[0], self.value)
         return utils.force_array(value / x[0]),
 
-    def backward_cpu(self, x, gy):
-        value = _preprocess_const(x[0], self.value)
-        return utils.force_array(-value * gy[0] / (x[0] ** 2)),
-
-    def backward_gpu(self, x, gy):
-        # TODO(beam2d): Make it not use the input
-        value = _preprocess_const(x[0], self.value)
-        gx = cuda.elementwise('T x, T gy, T value', 'T gx',
-                              'gx = -value * gy / (x * x)',
-                              'div_from_const_bwd')(x[0], gy[0], value)
-        return gx,
+    def backward(self, indexes, gy):
+        x, = self.get_retained_inputs()
+        value = _preprocess_const(x.data, self.value)
+        # TODO(beam2d): Fuse the kernels
+        return (-value) * gy[0] / (x * x),
 
 
 def rdiv(self, rhs):  # rhs / lhs
@@ -364,12 +358,12 @@ def rdiv(self, rhs):  # rhs / lhs
     """
 
     if isinstance(rhs, variable.Variable):
-        return Div()(rhs, self)
+        return Div().apply((rhs, self))[0]
     _check_constant_type(rhs)
-    return DivFromConstant(rhs)(self)
+    return DivFromConstant(rhs).apply((self,))[0]
 
 
-class PowVarVar(function.Function):
+class PowVarVar(function_node.FunctionNode):
 
     @property
     def label(self):
@@ -383,29 +377,26 @@ class PowVarVar(function.Function):
             in_types[0].shape == in_types[1].shape
         )
 
-    def forward_cpu(self, x):
-        self.y = utils.force_array(x[0] ** x[1])
-        return self.y,
+    def forward(self, x):
+        self.retain_inputs((0, 1))
+        self.retain_outputs((0,))
+        return utils.force_array(x[0] ** x[1]),
 
-    def forward_gpu(self, x):
-        return x[0] ** x[1],
+    def backward(self, indexes, gy):
+        x0, x1 = self.get_retained_inputs()
+        y, = self.get_retained_outputs()
+        ret = []
 
-    def backward_cpu(self, x, gy):
-        one = x[1].dtype.type(1)
-        gx0 = utils.force_array(x[1] * (x[0] ** (x[1] - one)) * gy[0])
-        gx1 = utils.force_array(numpy.log(x[0]) * self.y * gy[0])
-        return gx0, gx1
+        # TODO(beam2d): Fuse the kernels
+        if 0 in indexes:
+            ret.append(x1 * (x0 ** (x1 - 1)) * gy[0])
+        if 1 in indexes:
+            ret.append(exponential.log(x0) * y * gy[0])
 
-    def backward_gpu(self, x, gy):
-        return cuda.elementwise(
-            'T x0, T x1, T gy', 'T gx0, T gx1',
-            '''
-               gx0 = x1 * pow(x0, x1 - 1) * gy;
-               gx1 = log(x0) * pow(x0, x1) * gy;
-            ''', 'pow_var_var_bwd')(x[0], x[1], gy[0])
+        return ret
 
 
-class PowVarConst(function.Function):
+class PowVarConst(function_node.FunctionNode):
 
     def __init__(self, value):
         self.value = value
@@ -419,21 +410,13 @@ class PowVarConst(function.Function):
         type_check.expect(in_types[0].dtype.kind == 'f')
 
     def forward(self, x):
+        self.retain_inputs((0,))
         value = _preprocess_const(x[0], self.value)
         return utils.force_array(x[0] ** value, x[0].dtype),
 
-    def backward_cpu(self, x, gy):
-        val_1 = _preprocess_const(x[0], self.value - 1)
-        gx = utils.force_type(x[0].dtype, self.value) * (x[0] ** val_1) * gy[0]
-        return utils.force_array(gx),
-
-    def backward_gpu(self, x, gy):
-        value = _preprocess_const(x[0], self.value)
-        gx = cuda.elementwise(
-            'T x, T gy, T value', 'T gx',
-            'gx = value * pow(x, value - 1) * gy',
-            'pow_var_const_bwd')(x[0], gy[0], value)
-        return gx,
+    def backward(self, indexes, gy):
+        x, = self.get_retained_inputs()
+        return self.value * (x ** (self.value - 1)) * gy[0],
 
 
 def pow(self, rhs):  # lhs ** rhs
@@ -444,12 +427,12 @@ def pow(self, rhs):  # lhs ** rhs
     """
 
     if isinstance(rhs, variable.Variable):
-        return PowVarVar()(self, rhs)
+        return PowVarVar().apply((self, rhs))[0]
     _check_constant_type(rhs)
-    return PowVarConst(rhs)(self)
+    return PowVarConst(rhs).apply((self,))[0]
 
 
-class PowConstVar(function.Function):
+class PowConstVar(function_node.FunctionNode):
 
     def __init__(self, value):
         self.value = value
@@ -463,23 +446,14 @@ class PowConstVar(function.Function):
         type_check.expect(in_types[0].dtype.kind == 'f')
 
     def forward(self, x):
+        self.retain_outputs((0,))
         value = _preprocess_const(x[0], self.value)
-        self.y = utils.force_array(value ** x[0])
-        return self.y,
+        return utils.force_array(value ** x[0]),
 
-    def backward_cpu(self, x, gy):
-        # TODO(beam2d): Make it not use the input
-        value = _preprocess_const(x[0], self.value)
-        return utils.force_array(
-            numpy.log(value, dtype=x[0].dtype) * self.y * gy[0]),
-
-    def backward_gpu(self, x, gy):
-        value = _preprocess_const(x[0], self.value)
-        gx = cuda.elementwise(
-            'T x, T gy, T value', 'T gx',
-            'gx = log(value) * pow(value, x) * gy',
-            'pow_const_var_bwd')(x[0], gy[0], value)
-        return gx,
+    def backward(self, indexes, gy):
+        y, = self.get_retained_outputs()
+        xp = cuda.get_array_module(self.value)
+        return xp.log(self.value) * y * gy[0],
 
 
 def rpow(self, rhs):  # rhs ** lhs
@@ -490,9 +464,9 @@ def rpow(self, rhs):  # rhs ** lhs
     """
 
     if isinstance(rhs, variable.Variable):
-        return PowVarVar()(rhs, self)
+        return PowVarVar().apply((rhs, self))[0]
     _check_constant_type(rhs)
-    return PowConstVar(rhs)(self)
+    return PowConstVar(rhs).apply((self,))[0]
 
 
 class MatMulVarVar(_matmul.MatMul):
@@ -606,11 +580,12 @@ def matmul(self, rhs):  # lhs @ rhs
     Returns:
         ~chainer.Variable: Output variable.
     """
-
-    if isinstance(rhs, variable.Variable):
-        return MatMulVarVar()(self, rhs)
-    _check_constant_type(rhs)
-    return MatMulVarConst(rhs)(self)
+    return MatMulVarVar().apply((self, rhs))[0]
+    #
+    # if isinstance(rhs, variable.Variable):
+    #     return MatMulVarVar()(self, rhs)
+    # _check_constant_type(rhs)
+    # return MatMulVarConst(rhs)(self)
 
 
 def rmatmul(self, rhs):  # rhs @ lhs
@@ -619,11 +594,12 @@ def rmatmul(self, rhs):  # rhs @ lhs
     Returns:
         ~chainer.Variable: Output variable.
     """
+    return MatMulVarVar().apply((self, rhs))[0]
 
-    if isinstance(rhs, variable.Variable):
-        return MatMulVarVar()(rhs, self)
-    _check_constant_type(rhs)
-    return MatMulConstVar(rhs)(self)
+    # if isinstance(rhs, variable.Variable):
+    #     return MatMulVarVar()(rhs, self)
+    # _check_constant_type(rhs)
+    # return MatMulConstVar(rhs)(self)
 
 
 def install_variable_arithmetics():
