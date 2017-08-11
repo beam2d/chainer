@@ -4,7 +4,7 @@ import numpy
 
 import chainer
 from chainer import cuda
-from chainer import functions
+import chainer.functions as F
 from chainer import gradient_check
 from chainer import testing
 from chainer.testing import attr
@@ -39,6 +39,8 @@ class TestBroadcast(unittest.TestCase):
                      for shape in self.in_shapes]
         self.grads = [uniform(0, 1, self.out_shape).astype(self.dtype)
                       for _ in range(len(self.in_shapes))]
+        self.grad_grads = [uniform(0, 1, shape).astype(self.dtype)
+                           for shape in self.in_shapes]
 
         self.check_backward_options = {'dtype': numpy.float64}
         if self.dtype == numpy.float16:
@@ -47,7 +49,7 @@ class TestBroadcast(unittest.TestCase):
 
     def check_forward(self, data):
         xs = [chainer.Variable(x) for x in data]
-        bxs = functions.broadcast(*xs)
+        bxs = F.broadcast(*xs)
 
         # When len(xs) == 1, function returns a Variable object
         if isinstance(bxs, chainer.Variable):
@@ -66,8 +68,7 @@ class TestBroadcast(unittest.TestCase):
 
     def check_backward(self, data, grads):
         gradient_check.check_backward(
-            functions.Broadcast(), data, grads,
-            **self.check_backward_options)
+            F.broadcast, data, grads, **self.check_backward_options)
 
     @condition.retry(3)
     def test_backward_cpu(self):
@@ -79,6 +80,22 @@ class TestBroadcast(unittest.TestCase):
         self.check_backward([cuda.to_gpu(x) for x in self.data],
                             [cuda.to_gpu(x) for x in self.grads])
 
+    def check_double_backward(self, data, grads, grad_grads):
+        gradient_check.check_double_backward(
+            lambda *x: tuple(y * y for y in F.broadcast(*x)),  # nonlinear
+            data, grads, grad_grads, **self.check_backward_options)
+
+    @condition.retry(3)
+    def test_double_backward_cpu(self):
+        self.check_double_backward(self.data, self.grads, self.grad_grads)
+
+    @attr.gpu
+    @condition.retry(3)
+    def test_double_backward_gpu(self):
+        self.check_double_backward([cuda.to_gpu(x) for x in self.data],
+                                   [cuda.to_gpu(x) for x in self.grads],
+                                   [cuda.to_gpu(x) for x in self.grad_grads])
+
 
 class TestBroadcastTypeError(unittest.TestCase):
 
@@ -89,7 +106,7 @@ class TestBroadcastTypeError(unittest.TestCase):
         y = chainer.Variable(y_data)
 
         with self.assertRaises(type_check.InvalidType):
-            functions.broadcast(x, y)
+            F.broadcast(x, y)
 
     def test_invalid_shape_fill(self):
         x_data = numpy.zeros((3, 2, 5), dtype=numpy.int32)
@@ -98,11 +115,11 @@ class TestBroadcastTypeError(unittest.TestCase):
         y = chainer.Variable(y_data)
 
         with self.assertRaises(type_check.InvalidType):
-            functions.broadcast(x, y)
+            F.broadcast(x, y)
 
     def test_no_args(self):
         with self.assertRaises(type_check.InvalidType):
-            functions.broadcast()
+            F.broadcast()
 
 
 @testing.parameterize(*testing.product_dict(
@@ -123,14 +140,18 @@ class TestBroadcastTo(unittest.TestCase):
         uniform = numpy.random.uniform
         self.data = uniform(0, 1, self.in_shape).astype(self.dtype)
         self.grad = uniform(0, 1, self.out_shape).astype(self.dtype)
+        self.grad_grad = uniform(0, 1, self.in_shape).astype(self.dtype)
         self.check_backward_options = {}
+        self.check_double_backward_options = {}
         if self.dtype == numpy.float16:
             self.check_backward_options = {
                 'eps': 2 ** -5, 'atol': 1e-3, 'rtol': 1e-2}
+            self.check_double_backward_options = {
+                'eps': 2 ** -5, 'atol': 1e-2, 'rtol': 1e-2}
 
     def check_forward(self, data):
         x = chainer.Variable(data)
-        bx = functions.broadcast_to(x, self.out_shape)
+        bx = F.broadcast_to(x, self.out_shape)
 
         self.assertEqual(bx.data.shape, self.out_shape)
 
@@ -141,19 +162,36 @@ class TestBroadcastTo(unittest.TestCase):
     def test_forward_gpu(self):
         self.check_forward(cuda.to_gpu(self.data))
 
-    @condition.retry(3)
     def check_backward(self, data, grads):
         gradient_check.check_backward(
-            functions.BroadcastTo(self.out_shape), data, grads,
-            **self.check_backward_options)
+            lambda x: F.broadcast_to(x, self.out_shape),
+            data, grads, **self.check_backward_options)
 
     @condition.retry(3)
     def test_backward_cpu(self):
         self.check_backward(self.data, self.grad)
 
     @attr.gpu
+    @condition.retry(3)
     def test_backward_gpu(self):
         self.check_backward(cuda.to_gpu(self.data), cuda.to_gpu(self.grad))
+
+    def check_double_backward(self, data, grads, grad_grad):
+        square = lambda x: x * x
+        gradient_check.check_double_backward(
+            lambda x: square(F.broadcast_to(x, self.out_shape)),
+            data, grads, grad_grad, **self.check_double_backward_options)
+
+    @condition.retry(3)
+    def test_double_backward_cpu(self):
+        self.check_double_backward(self.data, self.grad, self.grad_grad)
+
+    @attr.gpu
+    @condition.retry(3)
+    def test_double_backward_gpu(self):
+        self.check_double_backward(
+            cuda.to_gpu(self.data), cuda.to_gpu(self.grad),
+            cuda.to_gpu(self.grad_grad))
 
 
 @testing.parameterize(
@@ -170,7 +208,7 @@ class TestBroadcastToTypeCheck(unittest.TestCase):
     def test_type_check(self):
         x = chainer.Variable(self.data)
         with self.assertRaises(type_check.InvalidType):
-            functions.broadcast_to(x, self.out_shape)
+            F.broadcast_to(x, self.out_shape)
 
 
 testing.run_module(__name__, __file__)

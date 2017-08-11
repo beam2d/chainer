@@ -1,30 +1,31 @@
 import six
 
 from chainer import cuda
-from chainer import function
+from chainer import function_node
+from chainer import functions as F
 from chainer.utils import type_check
 
 
-def _backward_one(xp, shape, dtype, g):
+def _backward_one(inode, g):
     if g is None:
-        return xp.zeros(shape, dtype)
+        return None
+
+    shape = inode.shape
+    dtype = inode.dtype
+    assert shape is not None
+    assert dtype is not None
 
     ndim = len(shape)
-    if g.ndim != ndim:
-        g = g.sum(axis=tuple(range(g.ndim - ndim)))
-        # An input variable is always an array, not a scalar.
-        # We need to convert a scalar value to a zero-dim array.
-        if xp.isscalar(g):
-            g = xp.array(g)
-
-    axis = tuple(i for i, sx in enumerate(shape) if sx == 1)
-    if len(axis) > 0:
-        return g.sum(keepdims=True, axis=axis)
-    else:
-        return g
+    dim_diff = g.ndim - ndim
+    axis = tuple([i for i in range(g.ndim)
+                  if i < dim_diff or shape[i - dim_diff] == 1])
+    g_reduced = F.sum(g, axis=axis, keepdims=True)
+    if dim_diff == 0:
+        return g_reduced
+    return F.squeeze(g_reduced, axis=tuple(range(dim_diff)))
 
 
-class Broadcast(function.Function):
+class Broadcast(function_node.FunctionNode):
 
     """Function that broadcasts given arrays."""
 
@@ -42,17 +43,11 @@ class Broadcast(function.Function):
                 raise type_check.InvalidType(expect, actual)
 
     def forward(self, xs):
-        self.retain_inputs(())
-        self._xp = cuda.get_array_module(*xs)
-        self._in_shapes = [x.shape for x in xs]
-        self._in_dtypes = [x.dtype for x in xs]
-        return tuple(self._xp.broadcast_arrays(*xs))
+        xp = cuda.get_array_module(*xs)
+        return tuple(xp.broadcast_arrays(*xs))
 
-    def backward(self, xs, grads):
-        return tuple(
-            _backward_one(self._xp, shape, dtype, g)
-            for shape, dtype, g in six.moves.zip(
-                self._in_shapes, self._in_dtypes, grads))
+    def backward(self, indexes, gys):
+        return [_backward_one(self.inputs[i], gys[i]) for i in indexes]
 
 
 def broadcast(*args):
@@ -81,10 +76,10 @@ def broadcast(*args):
         True
 
     """
-    return Broadcast()(*args)
+    return Broadcast().apply(args)
 
 
-class BroadcastTo(function.Function):
+class BroadcastTo(function_node.FunctionNode):
 
     """Function that broadcasts an array to a new shape."""
 
@@ -109,23 +104,18 @@ class BroadcastTo(function.Function):
             raise type_check.InvalidType(expect, actual)
 
     def forward(self, xs):
-        self.retain_inputs(())
         xp = cuda.get_array_module(*xs)
         x = xs[0]
-        self._xp = xp
-        self._in_shape = x.shape
-        self._in_dtype = x.dtype
         if hasattr(xp, 'broadcast_to'):
             return xp.broadcast_to(x, self._shape),
         else:
             # numpy 1.9 doesn't support broadcast_to method
-            dummy = xp.empty(self._shape)
+            dummy = xp.empty(x.shape)
             bx, _ = xp.broadcast_arrays(x, dummy)
             return bx,
 
-    def backward(self, xs, grads):
-        return _backward_one(
-            self._xp, self._in_shape, self._in_dtype, grads[0]),
+    def backward(self, indexes, gy):
+        return _backward_one(self.inputs[0], gy[0]),
 
 
 def broadcast_to(x, shape):
@@ -154,4 +144,4 @@ def broadcast_to(x, shape):
                [0, 1, 2]])
 
     """
-    return BroadcastTo(shape)(x)
+    return BroadcastTo(shape).apply((x,))[0]
