@@ -1583,15 +1583,5 @@ class TestLabel(unittest.TestCase):
     def test_matmul_var_var(self):
         self.assertEqual(basic_math.MatMulVarVar().label, '_ @ _')
 
-    def test_matmul_var_const(self):
-        self.assertEqual(
-            basic_math.MatMulVarConst(numpy.zeros((2, 2))).label,
-            '_ @ constant array')
-
-    def test_matmul_const_var(self):
-        self.assertEqual(
-            basic_math.MatMulConstVar(numpy.zeros((2, 2))).label,
-            'constant array @ _')
-
 
 testing.run_module(__name__, __file__)

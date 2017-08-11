@@ -2,9 +2,7 @@ import numpy
 
 from chainer import cuda
 from chainer import function_node
-from chainer.functions.array import broadcast
-from chainer.functions.array import cast
-from chainer.functions.array import swapaxes
+from chainer import functions as F
 from chainer import utils
 from chainer.utils import type_check
 
@@ -113,26 +111,26 @@ class MatMul(function_node.FunctionNode):
 
         if 0 in indexes:
             if gy[0].ndim == 0:
-                gy0 = cast.cast(gy[0], b.dtype)
-                ga = broadcast.broadcast_to(gy0, b_shape) * b
+                gy0 = F.cast(gy[0], b.dtype)
+                ga = F.broadcast_to(gy0, b_shape) * b
             else:
                 ga = matmul(gy[0], b, False, not self.transb)
             if self.transa and a.ndim != 1:
-                ga = swapaxes.swapaxes(ga, -1, -2)
+                ga = F.swapaxes(ga, -1, -2)
             if ga.dtype != a.dtype:
-                ga = cast.cast(ga, a.dtype)
+                ga = F.cast(ga, a.dtype)
             ret.append(ga.reshape(a_shape))
 
         if 1 in indexes:
             if gy[0].ndim == 0:
-                gy0 = cast.cast(gy[0], a.dtype)
-                gb = a * broadcast.broadcast_to(gy0, a_shape)
+                gy0 = F.cast(gy[0], a.dtype)
+                gb = a * F.broadcast_to(gy0, a_shape)
             else:
                 gb = matmul(a, gy[0], not self.transa, False)
             if self.transb and a.ndim != 1:
-                gb = swapaxes.swapaxes(gb, -1, -2)
+                gb = F.swapaxes(gb, -1, -2)
             if gb.dtype != b.dtype:
-                gb = cast.cast(gb, b.dtype)
+                gb = F.cast(gb, b.dtype)
             ret.append(gb.reshape(b_shape))
 
         return ret

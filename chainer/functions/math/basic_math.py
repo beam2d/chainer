@@ -1,9 +1,8 @@
 import numpy
 
 from chainer import cuda
-from chainer import function
 from chainer import function_node
-from chainer.functions.math import exponential
+from chainer import functions as F
 from chainer.functions.math import matmul as _matmul
 from chainer import utils
 from chainer.utils import type_check
@@ -391,7 +390,7 @@ class PowVarVar(function_node.FunctionNode):
         if 0 in indexes:
             ret.append(x1 * (x0 ** (x1 - 1)) * gy[0])
         if 1 in indexes:
-            ret.append(exponential.log(x0) * y * gy[0])
+            ret.append(F.log(x0) * y * gy[0])
 
         return ret
 
@@ -476,104 +475,6 @@ class MatMulVarVar(_matmul.MatMul):
         return '_ @ _'
 
 
-class MatMulVarConst(function.Function):
-
-    def __init__(self, value):
-        self.value = value
-
-    @property
-    def label(self):
-        return '_ @ %s' % _convert_value_to_string(self.value)
-
-    def check_type_forward(self, in_types):
-        type_check.expect(in_types.size() == 1)
-        a_type = in_types[0]
-        b_type = self.value
-
-        type_check.expect(
-            a_type.dtype.kind == 'f',
-            b_type.dtype.kind == 'f',
-            a_type.ndim >= 1,
-            a_type.ndim == b_type.ndim,
-        )
-
-        ndim = type_check.eval(a_type.ndim)
-        if ndim == 1:
-            type_check.expect(a_type.shape == b_type.shape)
-        else:
-            a_idx = _matmul._get_check_index(False, False,
-                                             row_idx=-2, col_idx=-1)
-            b_idx = _matmul._get_check_index(False, True,
-                                             row_idx=-2, col_idx=-1)
-            type_check.expect(
-                a_type.shape[:-2] == b_type.shape[:-2],
-                a_type.shape[a_idx] == b_type.shape[b_idx],
-            )
-
-    def forward(self, x):
-        self.retain_inputs(())
-        self._x_shape = x[0].shape
-        return utils.force_array(_matmul._matmul(x[0], self.value)),
-
-    def backward(self, x, gy):
-        if gy[0].ndim == 0:
-            gx0 = gy[0] * self.value
-        else:
-            gx0 = _matmul._matmul(
-                gy[0], self.value, transb=True, transout=False
-            ).reshape(self._x_shape)
-        return gx0,
-
-
-class MatMulConstVar(function.Function):
-
-    def __init__(self, value):
-        self.value = value
-
-    @property
-    def label(self):
-        return '%s @ _' % _convert_value_to_string(self.value)
-
-    def check_type_forward(self, in_types):
-        type_check.expect(in_types.size() == 1)
-        a_type = self.value
-        b_type = in_types[0]
-
-        type_check.expect(
-            a_type.dtype.kind == 'f',
-            b_type.dtype.kind == 'f',
-            a_type.ndim >= 1,
-            a_type.ndim == b_type.ndim,
-        )
-
-        ndim = type_check.eval(a_type.ndim)
-        if ndim == 1:
-            type_check.expect(a_type.shape == b_type.shape)
-        else:
-            a_idx = _matmul._get_check_index(False, False,
-                                             row_idx=-2, col_idx=-1)
-            b_idx = _matmul._get_check_index(False, True,
-                                             row_idx=-2, col_idx=-1)
-            type_check.expect(
-                a_type.shape[:-2] == b_type.shape[:-2],
-                a_type.shape[a_idx] == b_type.shape[b_idx],
-            )
-
-    def forward(self, x):
-        self.retain_inputs(())
-        self._x_shape = x[0].shape
-        return utils.force_array(_matmul._matmul(self.value, x[0])),
-
-    def backward(self, x, gy):
-        if gy[0].ndim == 0:
-            gx1 = gy[0] * self.value
-        else:
-            gx1 = _matmul._matmul(
-                self.value, gy[0], transa=True, transout=False
-            ).reshape(self._x_shape)
-        return gx1,
-
-
 def matmul(self, rhs):  # lhs @ rhs
     """Matrix multiplication.
 
@@ -581,11 +482,6 @@ def matmul(self, rhs):  # lhs @ rhs
         ~chainer.Variable: Output variable.
     """
     return MatMulVarVar().apply((self, rhs))[0]
-    #
-    # if isinstance(rhs, variable.Variable):
-    #     return MatMulVarVar()(self, rhs)
-    # _check_constant_type(rhs)
-    # return MatMulVarConst(rhs)(self)
 
 
 def rmatmul(self, rhs):  # rhs @ lhs
@@ -594,12 +490,7 @@ def rmatmul(self, rhs):  # rhs @ lhs
     Returns:
         ~chainer.Variable: Output variable.
     """
-    return MatMulVarVar().apply((self, rhs))[0]
-
-    # if isinstance(rhs, variable.Variable):
-    #     return MatMulVarVar()(rhs, self)
-    # _check_constant_type(rhs)
-    # return MatMulConstVar(rhs)(self)
+    return MatMulVarVar().apply((rhs, self))[0]
 
 
 def install_variable_arithmetics():
