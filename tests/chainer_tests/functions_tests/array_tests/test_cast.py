@@ -4,7 +4,7 @@ import numpy
 
 import chainer
 from chainer import cuda
-from chainer import functions
+from chainer import functions as F
 from chainer import gradient_check
 from chainer import testing
 from chainer.testing import attr
@@ -34,7 +34,7 @@ class TestCast(unittest.TestCase):
 
     def check_forward(self, x_data):
         x = chainer.Variable(x_data)
-        y = functions.cast(x, self.out_type)
+        y = F.cast(x, self.out_type)
         self.assertEqual(y.data.shape, x.data.shape)
         self.assertEqual(y.data.dtype, self.out_type)
 
@@ -46,7 +46,7 @@ class TestCast(unittest.TestCase):
         self.check_forward(cuda.to_gpu(self.x))
 
     def check_backward(self, x_data, g_data):
-        func = functions.Cast(self.out_type)
+        func = lambda x: F.cast(x, self.out_type)
         gradient_check.check_backward(
             func, x_data, g_data, eps=2.0 ** -2, atol=1e-3, rtol=1e-3)
 

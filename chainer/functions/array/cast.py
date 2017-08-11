@@ -1,8 +1,8 @@
-from chainer import function
+from chainer import function_node
 from chainer.utils import type_check
 
 
-class Cast(function.Function):
+class Cast(function_node.FunctionNode):
 
     """Cast function."""
 
@@ -16,12 +16,10 @@ class Cast(function.Function):
         type_check.expect(x_type.dtype.kind == 'f')
 
     def forward(self, x):
-        self.retain_inputs(())
-        self._in_type = x[0].dtype.type
         return x[0].astype(self.type, copy=False),
 
-    def backward(self, x, g):
-        return g[0].astype(self._in_type, copy=False),
+    def backward(self, indexes, g):
+        return cast(g[0], self.inputs[0].dtype),
 
 
 def cast(x, typ):
@@ -51,4 +49,6 @@ def cast(x, typ):
         dtype('float16')
 
     """
-    return Cast(typ)(x)
+    if x.dtype == typ:
+        return x
+    return Cast(typ).apply((x,))[0]
