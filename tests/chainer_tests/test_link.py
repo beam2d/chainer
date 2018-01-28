@@ -532,9 +532,10 @@ class TestChain(unittest.TestCase):
         self.assertEqual(self.l2.name, 'l2')
 
     def test_add_link_to_existing_attribute(self):
-        self.l1.z = 0
+        self.c1.z = 0
         with self.assertRaises(AttributeError):
-            self.l1.add_link('z', chainer.Link())
+            with testing.assert_warns(DeprecationWarning):
+                self.c1.add_link('z', chainer.Link())
 
     def test_assign_link_outside_of_init_scope(self):
         l = chainer.Link()
@@ -847,10 +848,10 @@ class TestChainList(unittest.TestCase):
         c2 = self.c2.copy()
 
         self.assertIs(c2.name, None)
-        self.assertIsInstance(c2._children, list)
+        self.assertIsInstance(c2._list_children, list)
         self.assertIsNot(c2[0], self.c1)
         self.assertEqual(c2[0].name, '0')
-        self.assertIsInstance(c2[0]._children, list)
+        self.assertIsInstance(c2[0]._list_children, list)
         self.assertIsNot(c2[0][0], self.l1)
         self.assertEqual(c2[0][0].name, '0')
         self.assertIsNot(c2[0][0].x, self.l1.x)
